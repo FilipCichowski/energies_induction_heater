@@ -17,6 +17,8 @@
 #define TIME_DOWN 11
 #define EEPROM_ADDR_TIME 2
 
+#define START_INPUT A2
+
 volatile uint8_t currentDigit = 0;
 bool manualMode;
 uint8_t powerLevel;
@@ -33,6 +35,8 @@ unsigned long buttonTimeDownHoldStart = 0;
 bool buttonTimeUpHeld = false;
 bool buttonTimeDownHeld = false;
 uint16_t timerValue;
+
+unsigned long lastTimerDecrement = 0;
 
 const uint8_t digitMap[10] = {
   0b01111110, 0b00001100, 0b10110110, 0b10011110,
@@ -54,6 +58,7 @@ void setup() {
   pinMode(TIMER_LED, OUTPUT);
   pinMode(TIME_UP, INPUT_PULLUP);
   pinMode(TIME_DOWN, INPUT_PULLUP);
+  pinMode(START_INPUT, INPUT);
 
   uint8_t savedMode = EEPROM.read(EEPROM_ADDR_MODE);
   manualMode = (savedMode == 0xFF) ? true : savedMode;
@@ -112,7 +117,6 @@ void handleButtonPress(bool* held, unsigned long* holdStart, unsigned long now, 
   }
 }
 
-
 void checkButtons(int buttonUp, int buttonDown, bool* upHeld, bool* downHeld, unsigned long* upHoldStart, unsigned long* downHoldStart, void (*changeValue)(int), int minValue, int maxValue) {
   unsigned long now = millis();
 
@@ -129,24 +133,42 @@ void checkButtons(int buttonUp, int buttonDown, bool* upHeld, bool* downHeld, un
   }
 }
 
+void loop() {
+  if (modeChangeRequested) {
+    modeChangeRequested = false;
+    manualMode = !manualMode;
+    EEPROM.update(EEPROM_ADDR_MODE, manualMode);
+    updateLEDs();
+  }
+  
+  checkButtons(POWER_UP, POWER_DOWN, &buttonUpHeld, &buttonDownHeld, &buttonUpHoldStart, &buttonDownHoldStart, changePowerLevel, 0, 100);
+  checkButtons(TIME_UP, TIME_DOWN, &buttonTimeUpHeld, &buttonTimeDownHeld, &buttonTimeUpHoldStart, &buttonTimeDownHoldStart, changeTimerValue, 0, 999);
 
-
-void changePowerLevel(int change) {
-  if ((change == 1 && powerLevel < 100) || (change == -1 && powerLevel > 0)) {
-    powerLevel += change;
-    powerLevel = constrain(powerLevel, 0, 100);
-    EEPROM.update(EEPROM_ADDR_POWER, powerLevel);
-    updatePowerDisplay();
+  if (!manualMode && timerValue > 0 && digitalRead(TIME_UP) == HIGH && digitalRead(TIME_DOWN) == HIGH && digitalRead(START_INPUT) == HIGH) {
+    unsigned long now = millis();
+    if (now - lastTimerDecrement >= 1000) {
+      lastTimerDecrement = now;
+      timerValue--;
+      EEPROM.update(EEPROM_ADDR_TIME, timerValue);
+      updateTimerDisplay();
+    }
   }
 }
 
+
+
+
+
+void changePowerLevel(int change) {
+  powerLevel = constrain(powerLevel + change, 0, 100);
+  EEPROM.update(EEPROM_ADDR_POWER, powerLevel);
+  updatePowerDisplay();
+}
+
 void changeTimerValue(int change) {
-  if ((change == 1 && timerValue < 999) || (change == -1 && timerValue > 0)) {
-    timerValue += change;
-    timerValue = constrain(timerValue, 0, 999);
-    EEPROM.update(EEPROM_ADDR_TIME, timerValue);
-    updateTimerDisplay();
-  }
+  timerValue = constrain(timerValue + change, 0, 999);
+  EEPROM.update(EEPROM_ADDR_TIME, timerValue);
+  updateTimerDisplay();
 }
 
 void updateLEDs() {
@@ -164,16 +186,4 @@ void updateTimerDisplay() {
   digitBuffer[0] = timerValue / 100;
   digitBuffer[1] = (timerValue / 10) % 10;
   digitBuffer[2] = timerValue % 10;
-}
-
-void loop() {
-  if (modeChangeRequested) {
-    modeChangeRequested = false;
-    manualMode = !manualMode;
-    EEPROM.update(EEPROM_ADDR_MODE, manualMode);
-    updateLEDs();
-  }
-  
-  checkButtons(POWER_UP, POWER_DOWN, &buttonUpHeld, &buttonDownHeld, &buttonUpHoldStart, &buttonDownHoldStart, changePowerLevel, 0, 100);
-  checkButtons(TIME_UP, TIME_DOWN, &buttonTimeUpHeld, &buttonTimeDownHeld, &buttonTimeUpHoldStart, &buttonTimeDownHoldStart, changeTimerValue, 0, 999);
 }
