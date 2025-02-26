@@ -18,6 +18,7 @@
 #define EEPROM_ADDR_TIME 2
 
 #define START_INPUT A2
+#define STOP_INPUT A3  // Dodano definicję pinu STOP
 
 volatile uint8_t currentDigit = 0;
 bool manualMode;
@@ -37,6 +38,13 @@ bool buttonTimeDownHeld = false;
 uint16_t timerValue;
 
 unsigned long lastTimerDecrement = 0;
+
+bool countingEnabled = false;  // Zmienna do przechowywania stanu odliczania
+bool toggleMode = false;       // Tryb toggle (gdy STOP jest wysoki)
+bool lastStartState = HIGH;    // Poprzedni stan START
+bool lastStopState = HIGH;     // Poprzedni stan STOP
+unsigned long lastDebounceTime = 0;  // Czas ostatniego debounce'u
+const unsigned long debounceDelay = 50;  // Opóźnienie debounce'u
 
 const uint8_t digitMap[10] = {
   0b01111110, 0b00001100, 0b10110110, 0b10011110,
@@ -59,6 +67,7 @@ void setup() {
   pinMode(TIME_UP, INPUT_PULLUP);
   pinMode(TIME_DOWN, INPUT_PULLUP);
   pinMode(START_INPUT, INPUT);
+  pinMode(STOP_INPUT, INPUT);  // Ustawienie pinu STOP jako wejście
 
   uint8_t savedMode = EEPROM.read(EEPROM_ADDR_MODE);
   manualMode = (savedMode == 0xFF) ? true : savedMode;
@@ -71,6 +80,10 @@ void setup() {
   uint16_t savedTime = EEPROM.read(EEPROM_ADDR_TIME);
   timerValue = (savedTime > 999) ? 100 : savedTime;
   EEPROM.update(EEPROM_ADDR_TIME, timerValue);
+
+  delay(100);
+  // Sprawdzenie stanu pinu STOP przy starcie
+  toggleMode = (digitalRead(STOP_INPUT) == HIGH);
 
   updateLEDs();
   updatePowerDisplay();
@@ -144,8 +157,33 @@ void loop() {
   checkButtons(POWER_UP, POWER_DOWN, &buttonUpHeld, &buttonDownHeld, &buttonUpHoldStart, &buttonDownHoldStart, changePowerLevel, 0, 100);
   checkButtons(TIME_UP, TIME_DOWN, &buttonTimeUpHeld, &buttonTimeDownHeld, &buttonTimeUpHoldStart, &buttonTimeDownHoldStart, changeTimerValue, 0, 999);
 
-  if (!manualMode && timerValue > 0 && digitalRead(TIME_UP) == HIGH && digitalRead(TIME_DOWN) == HIGH && digitalRead(START_INPUT) == HIGH) {
-    unsigned long now = millis();
+  // Obsługa START i STOP z debouncingiem
+  bool startState = digitalRead(START_INPUT);
+  bool stopState = digitalRead(STOP_INPUT);
+  unsigned long now = millis();
+
+  if (now - lastDebounceTime > debounceDelay) {
+    if (toggleMode) {
+      // Tryb toggle: START działa jako przełącznik
+      if (startState == HIGH && lastStartState == LOW) {
+        countingEnabled = !countingEnabled;
+      }
+    } else {
+      // Tryb normalny: START włącza, STOP wyłącza
+      if (startState == HIGH && lastStartState == LOW) {
+        countingEnabled = true;
+      }
+      if (stopState == HIGH && lastStopState == LOW) {
+        countingEnabled = false;
+      }
+    }
+    lastStartState = startState;
+    lastStopState = stopState;
+    lastDebounceTime = now;
+  }
+
+  // Odliczanie czasu, jeśli jest włączone
+  if (!manualMode && timerValue > 0 && countingEnabled) {
     if (now - lastTimerDecrement >= 1000) {
       lastTimerDecrement = now;
       timerValue--;
@@ -154,10 +192,6 @@ void loop() {
     }
   }
 }
-
-
-
-
 
 void changePowerLevel(int change) {
   powerLevel = constrain(powerLevel + change, 0, 100);
