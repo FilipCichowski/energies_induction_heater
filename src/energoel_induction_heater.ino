@@ -12,10 +12,11 @@
 #define TIMER_LED 4
 #define EEPROM_ADDR_MODE 0
 #define EEPROM_ADDR_POWER 1
+#define EEPROM_ADDR_TIME 2
+#define EEPROM_ADDR_LAST 3
 
 #define TIME_UP 12
 #define TIME_DOWN 11
-#define EEPROM_ADDR_TIME 2
 
 #define START_INPUT A2
 #define STOP_INPUT A3
@@ -40,12 +41,12 @@ uint16_t timerValue;
 
 unsigned long lastTimerDecrement = 0;
 
-bool countingEnabled = false;  // Zmienna do przechowywania stanu odliczania
-bool toggleMode = false;       // Tryb toggle (gdy STOP jest wysoki)
-bool lastStartState = HIGH;    // Poprzedni stan START
-bool lastStopState = HIGH;     // Poprzedni stan STOP
-unsigned long lastDebounceTime = 0;  // Czas ostatniego debounce'u
-const unsigned long debounceDelay = 50;  // Opóźnienie debounce'u
+bool countingEnabled = false;
+bool toggleMode = false;
+bool lastStartState = HIGH;
+bool lastStopState = HIGH;
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 50;
 
 const uint8_t digitMap[10] = {
   0b01111110, 0b00001100, 0b10110110, 0b10011110,
@@ -71,6 +72,7 @@ void setup() {
   pinMode(STOP_INPUT, INPUT);
   pinMode(BUZZER, OUTPUT);
 
+  // Odczytanie zapisanych ustawień z EEPROM
   uint8_t savedMode = EEPROM.read(EEPROM_ADDR_MODE);
   manualMode = (savedMode == 0xFF) ? true : savedMode;
   EEPROM.update(EEPROM_ADDR_MODE, manualMode);
@@ -79,12 +81,13 @@ void setup() {
   powerLevel = (savedPower > 100) ? 50 : savedPower;
   EEPROM.update(EEPROM_ADDR_POWER, powerLevel);
 
-  uint16_t savedTime = EEPROM.read(EEPROM_ADDR_TIME);
+  uint16_t savedTime = (EEPROM.read(EEPROM_ADDR_TIME) << 8) | EEPROM.read(EEPROM_ADDR_TIME + 1);  // Odczytanie dwóch bajtów
   timerValue = (savedTime > 999) ? 100 : savedTime;
-  EEPROM.update(EEPROM_ADDR_TIME, timerValue);
+  EEPROM.update(EEPROM_ADDR_TIME, (timerValue >> 8) & 0xFF);
+  EEPROM.update(EEPROM_ADDR_TIME + 1, timerValue & 0xFF);  // Zapisz timerValue do dwóch bajtów
 
   delay(100);
-  // Sprawdzenie stanu pinu STOP przy starcie
+
   toggleMode = (digitalRead(STOP_INPUT) == HIGH);
 
   updateLEDs();
@@ -162,19 +165,16 @@ void loop() {
   checkButtons(POWER_UP, POWER_DOWN, &buttonUpHeld, &buttonDownHeld, &buttonUpHoldStart, &buttonDownHoldStart, changePowerLevel, 0, 100);
   checkButtons(TIME_UP, TIME_DOWN, &buttonTimeUpHeld, &buttonTimeDownHeld, &buttonTimeUpHoldStart, &buttonTimeDownHoldStart, changeTimerValue, 0, 999);
 
-  // Obsługa START i STOP z debouncingiem
   bool startState = digitalRead(START_INPUT);
   bool stopState = digitalRead(STOP_INPUT);
   unsigned long now = millis();
 
   if (now - lastDebounceTime > debounceDelay) {
     if (toggleMode) {
-      // Tryb toggle: START działa jako przełącznik
       if (startState == HIGH && lastStartState == LOW) {
         countingEnabled = !countingEnabled;
       }
     } else {
-      // Tryb normalny: START włącza, STOP wyłącza
       if (startState == HIGH && lastStartState == LOW) {
         countingEnabled = true;
       }
@@ -187,7 +187,6 @@ void loop() {
     lastDebounceTime = now;
   }
 
-  // Odliczanie czasu, jeśli jest włączone
   if (!manualMode && countingEnabled) {
     if (now - lastTimerDecrement >= 1000) {
       lastTimerDecrement = now;
@@ -195,13 +194,14 @@ void loop() {
       if (timerValue > 0) {
         timerValue--;
         beep();
-        EEPROM.update(EEPROM_ADDR_TIME, timerValue);
         updateTimerDisplay();
+        EEPROM.update(EEPROM_ADDR_TIME, (timerValue >> 8) & 0xFF);
+        EEPROM.update(EEPROM_ADDR_TIME + 1, timerValue & 0xFF);  // Zapisz timerValue do dwóch bajtów
       }
   
       if (timerValue == 0) {
-        long_beep();  // Uruchom dźwięk
-        countingEnabled = false;  // Zatrzymaj odliczanie
+        long_beep();
+        countingEnabled = false;
       }
     }
   }
@@ -209,14 +209,15 @@ void loop() {
 
 void changePowerLevel(int change) {
   powerLevel = constrain(powerLevel + change, 0, 100);
-  EEPROM.update(EEPROM_ADDR_POWER, powerLevel);
   updatePowerDisplay();
+  EEPROM.update(EEPROM_ADDR_POWER, powerLevel);
 }
 
 void changeTimerValue(int change) {
   timerValue = constrain(timerValue + change, 0, 999);
-  EEPROM.update(EEPROM_ADDR_TIME, timerValue);
   updateTimerDisplay();
+  EEPROM.update(EEPROM_ADDR_TIME, (timerValue >> 8) & 0xFF);
+  EEPROM.update(EEPROM_ADDR_TIME + 1, timerValue & 0xFF);
 }
 
 void updateLEDs() {
