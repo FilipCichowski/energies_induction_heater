@@ -18,7 +18,8 @@
 #define EEPROM_ADDR_TIME 2
 
 #define START_INPUT A2
-#define STOP_INPUT A3  // Dodano definicję pinu STOP
+#define STOP_INPUT A3
+#define BUZZER 5
 
 volatile uint8_t currentDigit = 0;
 bool manualMode;
@@ -67,7 +68,8 @@ void setup() {
   pinMode(TIME_UP, INPUT_PULLUP);
   pinMode(TIME_DOWN, INPUT_PULLUP);
   pinMode(START_INPUT, INPUT);
-  pinMode(STOP_INPUT, INPUT);  // Ustawienie pinu STOP jako wejście
+  pinMode(STOP_INPUT, INPUT);
+  pinMode(BUZZER, OUTPUT);
 
   uint8_t savedMode = EEPROM.read(EEPROM_ADDR_MODE);
   manualMode = (savedMode == 0xFF) ? true : savedMode;
@@ -107,6 +109,7 @@ ISR(TIMER1_COMPA_vect) {
   
   if (modeState == LOW && lastModeState == HIGH) {
     modeChangeRequested = true;
+    beep();
   }
   lastModeState = modeState;
 }
@@ -119,6 +122,7 @@ void handleButtonPress(bool* held, unsigned long* holdStart, unsigned long now, 
     *held = true;
     changeValue(change);
     lastButtonPress = now;
+    beep();
   }
 
   unsigned long holdTime = now - *holdStart;
@@ -127,6 +131,7 @@ void handleButtonPress(bool* held, unsigned long* holdStart, unsigned long now, 
   if (now - lastButtonPress > interval) {
     changeValue(change);
     lastButtonPress = now;
+    beep();
   }
 }
 
@@ -183,12 +188,21 @@ void loop() {
   }
 
   // Odliczanie czasu, jeśli jest włączone
-  if (!manualMode && timerValue > 0 && countingEnabled) {
+  if (!manualMode && countingEnabled) {
     if (now - lastTimerDecrement >= 1000) {
       lastTimerDecrement = now;
-      timerValue--;
-      EEPROM.update(EEPROM_ADDR_TIME, timerValue);
-      updateTimerDisplay();
+      
+      if (timerValue > 0) {
+        timerValue--;
+        beep();
+        EEPROM.update(EEPROM_ADDR_TIME, timerValue);
+        updateTimerDisplay();
+      }
+  
+      if (timerValue == 0) {
+        long_beep();  // Uruchom dźwięk
+        countingEnabled = false;  // Zatrzymaj odliczanie
+      }
     }
   }
 }
@@ -220,4 +234,12 @@ void updateTimerDisplay() {
   digitBuffer[0] = timerValue / 100;
   digitBuffer[1] = (timerValue / 10) % 10;
   digitBuffer[2] = timerValue % 10;
+}
+
+void beep() {
+  tone(BUZZER, 2400, 50);
+}
+
+void long_beep() {
+  tone(BUZZER, 2400, 1000);
 }
