@@ -14,6 +14,7 @@
 #define EEPROM_ADDR_POWER 1
 #define EEPROM_ADDR_TIME 2
 #define EEPROM_ADDR_LAST 3
+#define HEATER_PIN A0
 
 #define TIME_UP 12
 #define TIME_DOWN 11
@@ -205,6 +206,23 @@ void loop() {
       }
     }
   }
+
+    // Obsługa pinu A0 (nagrzewnica) w zależności od trybu
+    if (!manualMode && countingEnabled) {
+      // W trybie odliczania - jeśli odliczanie jest włączone
+      digitalWrite(HEATER_PIN, HIGH);  // Ustawienie pinu A0 (nagrzewnicy) na HIGH
+    } else if (!manualMode && !countingEnabled) {
+      // W trybie odliczania - jeśli odliczanie jest wyłączone
+      digitalWrite(HEATER_PIN, LOW);  // Ustawienie pinu A0 (nagrzewnicy) na LOW
+    } else if (manualMode && toggleMode) {
+      // W trybie manualnym - włączony toggle mode
+      if (!startState && lastStartState) {
+        countingEnabled = !countingEnabled;  // Zmiana stanu nagrzewnicy
+        digitalWrite(HEATER_PIN, countingEnabled);  // Toggle nagrzewnicy (A0)
+      }
+    } else {
+      digitalWrite(HEATER_PIN, startState); 
+    }
 }
 
 void changePowerLevel(int change) {
