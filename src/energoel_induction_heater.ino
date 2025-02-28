@@ -22,6 +22,7 @@
 #define START_INPUT A2
 #define STOP_INPUT A3
 #define BUZZER 5
+#define PWM_PIN 10
 
 volatile uint8_t currentDigit = 0;
 bool manualMode;
@@ -72,6 +73,7 @@ void setup() {
   pinMode(START_INPUT, INPUT);
   pinMode(STOP_INPUT, INPUT);
   pinMode(BUZZER, OUTPUT);
+  pinMode(PWM_PIN, OUTPUT);
 
   // Odczytanie zapisanych ustawień z EEPROM
   uint8_t savedMode = EEPROM.read(EEPROM_ADDR_MODE);
@@ -94,28 +96,21 @@ void setup() {
   updateLEDs();
   updatePowerDisplay();
   updateTimerDisplay();
+  analogWrite(PWM_PIN, map(powerLevel, 0, 100, 0, 200));
+  //analogWrite(PWM_PIN, 50); 
 
-  TCCR1A = 0;
-  TCCR1B = (1 << WGM12) | (1 << CS11);
-  OCR1A = 1999;
-  TIMSK1 |= (1 << OCIE1A);
+  TCCR2A = (1 << WGM21); // Tryb CTC (Clear Timer on Compare Match)
+  TCCR2B = (1 << CS22);  // Preskaler 64 (16MHz / 64 = 250 kHz, OCR2A = 249 → 1kHz)
+  OCR2A = 249; // Przerwanie co 1 ms
+  TIMSK2 |= (1 << OCIE2A); // Włącz przerwanie dla Timer2
 }
 
-ISR(TIMER1_COMPA_vect) {
+ISR(TIMER2_COMPA_vect) {
   digitalWrite(SHIFT_LATCH, LOW);
   shiftOut(SHIFT_DATA, SHIFT_CLOCK, MSBFIRST, (1 << (6 - currentDigit)));
   shiftOut(SHIFT_DATA, SHIFT_CLOCK, MSBFIRST, digitMap[digitBuffer[currentDigit]]);
   digitalWrite(SHIFT_LATCH, HIGH);
   currentDigit = (currentDigit + 1) % 6;
-
-  static bool lastModeState = HIGH;
-  bool modeState = digitalRead(BUTTON_MODE);
-  
-  if (modeState == LOW && lastModeState == HIGH) {
-    modeChangeRequested = true;
-    beep();
-  }
-  lastModeState = modeState;
 }
 
 void handleButtonPress(bool* held, unsigned long* holdStart, unsigned long now, void (*changeValue)(int), int change) {
@@ -126,7 +121,7 @@ void handleButtonPress(bool* held, unsigned long* holdStart, unsigned long now, 
     *held = true;
     changeValue(change);
     lastButtonPress = now;
-    beep();
+    beep(50);
   }
 
   unsigned long holdTime = now - *holdStart;
@@ -135,7 +130,7 @@ void handleButtonPress(bool* held, unsigned long* holdStart, unsigned long now, 
   if (now - lastButtonPress > interval) {
     changeValue(change);
     lastButtonPress = now;
-    beep();
+    beep(50);
   }
 }
 
@@ -194,14 +189,14 @@ void loop() {
       
       if (timerValue > 0) {
         timerValue--;
-        beep();
+        beep(50);
         updateTimerDisplay();
         EEPROM.update(EEPROM_ADDR_TIME, (timerValue >> 8) & 0xFF);
         EEPROM.update(EEPROM_ADDR_TIME + 1, timerValue & 0xFF);  // Zapisz timerValue do dwóch bajtów
       }
   
       if (timerValue == 0) {
-        long_beep();
+        beep(500);
         countingEnabled = false;
       }
     }
@@ -223,10 +218,20 @@ void loop() {
     } else {
       digitalWrite(HEATER_PIN, startState); 
     }
+
+  static bool lastModeState = HIGH;
+  bool modeState = digitalRead(BUTTON_MODE);
+  
+  if (modeState == LOW && lastModeState == HIGH) {
+    modeChangeRequested = true;
+    beep(50);
+  }
+  lastModeState = modeState;
 }
 
 void changePowerLevel(int change) {
   powerLevel = constrain(powerLevel + change, 0, 100);
+  analogWrite(PWM_PIN, map(powerLevel, 0, 100, 0, 200));
   updatePowerDisplay();
   EEPROM.update(EEPROM_ADDR_POWER, powerLevel);
 }
@@ -255,10 +260,12 @@ void updateTimerDisplay() {
   digitBuffer[2] = timerValue % 10;
 }
 
-void beep() {
-  tone(BUZZER, 2400, 50);
-}
-
-void long_beep() {
-  tone(BUZZER, 2400, 1000);
+void beep(unsigned long duration) {
+  unsigned long startTime = millis();
+  while (millis() - startTime < duration) {
+      digitalWrite(BUZZER, HIGH);
+      delayMicroseconds(500);  // 1 kHz (1000 µs = 1 ms → 500 µs na pół okresu)
+      digitalWrite(BUZZER, LOW);
+      delayMicroseconds(500);
+  }
 }
