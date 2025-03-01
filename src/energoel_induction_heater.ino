@@ -15,6 +15,7 @@
 #define EEPROM_ADDR_TIME 2
 #define EEPROM_ADDR_LAST 3
 #define HEATER_PIN A0
+#define ERR_PIN A1
 
 #define TIME_UP 12
 #define TIME_DOWN 11
@@ -50,10 +51,12 @@ bool lastStopState = HIGH;
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 
-const uint8_t digitMap[10] = {
-  0b01111110, 0b00001100, 0b10110110, 0b10011110,
-  0b11001100, 0b11011010, 0b11111010, 0b00001110,
-  0b11111110, 0b11011110
+const uint8_t digitMap[12] = {
+  0b01111110, 0b00001100, 0b10110110, 0b10011110,  // 0-3
+  0b11001100, 0b11011010, 0b11111010, 0b00001110,  // 4-7
+  0b11111110, 0b11011110,  // 8-9
+  0b11110010,  // 'E'
+  0b10100000   // 'r'
 };
 
 uint8_t digitBuffer[6];
@@ -74,6 +77,7 @@ void setup() {
   pinMode(STOP_INPUT, INPUT);
   pinMode(BUZZER, OUTPUT);
   pinMode(PWM_PIN, OUTPUT);
+  pinMode(ERR_PIN, INPUT);
 
   // Odczytanie zapisanych ustawień z EEPROM
   uint8_t savedMode = EEPROM.read(EEPROM_ADDR_MODE);
@@ -103,6 +107,7 @@ void setup() {
   TCCR2B = (1 << CS22);  // Preskaler 64 (16MHz / 64 = 250 kHz, OCR2A = 249 → 1kHz)
   OCR2A = 249; // Przerwanie co 1 ms
   TIMSK2 |= (1 << OCIE2A); // Włącz przerwanie dla Timer2
+  delay(500);
 }
 
 ISR(TIMER2_COMPA_vect) {
@@ -151,82 +156,123 @@ void checkButtons(int buttonUp, int buttonDown, bool* upHeld, bool* downHeld, un
 }
 
 void loop() {
-  if (modeChangeRequested) {
-    modeChangeRequested = false;
-    manualMode = !manualMode;
-    EEPROM.update(EEPROM_ADDR_MODE, manualMode);
-    updateLEDs();
-  }
+  static bool errorState = false;
+  static unsigned long errorTime = 0;
+
+  const unsigned long debounceTime = 50;  // Czas debounce w ms
+  unsigned long lastErrorReadTime = 0;  // Ostatni czas odczytu błędu
   
-  checkButtons(POWER_UP, POWER_DOWN, &buttonUpHeld, &buttonDownHeld, &buttonUpHoldStart, &buttonDownHoldStart, changePowerLevel, 0, 100);
-  checkButtons(TIME_UP, TIME_DOWN, &buttonTimeUpHeld, &buttonTimeDownHeld, &buttonTimeUpHoldStart, &buttonTimeDownHoldStart, changeTimerValue, 0, 999);
-
-  bool startState = digitalRead(START_INPUT);
-  bool stopState = digitalRead(STOP_INPUT);
-  unsigned long now = millis();
-
-  if (now - lastDebounceTime > debounceDelay) {
-    if (toggleMode) {
-      if (startState == HIGH && lastStartState == LOW) {
-        countingEnabled = !countingEnabled;
+  if (digitalRead(ERR_PIN) == HIGH && !errorState) {
+      unsigned long currentTime = millis();
+  
+      // Sprawdzenie, czy od ostatniego wykrycia minął czas debounce
+      if (currentTime - lastErrorReadTime > debounceTime) {
+          lastErrorReadTime = currentTime;  // Aktualizacja czasu ostatniego odczytu
+          errorState = true;
+          errorTime = currentTime;  // Zapamiętaj czas błędu
+  
+          // Zatrzymanie licznika
+          countingEnabled = false;
+  
+          // Ustawienie bufora na "Err"
+          digitBuffer[0] = 10;  // 'E'
+          digitBuffer[1] = 11;  // 'r'
+          digitBuffer[2] = 11;  // 'r'
+  
+          // Emitowanie 3 sygnałów dźwiękowych
+          for (int i = 0; i < 3; i++) {
+              beep(500);
+              delay(500);  // Pauza między dźwiękami
+          }
       }
-    } else {
-      if (startState == HIGH && lastStartState == LOW) {
-        countingEnabled = true;
-      }
-      if (stopState == HIGH && lastStopState == LOW) {
-        countingEnabled = false;
-      }
-    }
-    lastStartState = startState;
-    lastStopState = stopState;
-    lastDebounceTime = now;
   }
 
-  if (!manualMode && countingEnabled) {
-    if (now - lastTimerDecrement >= 1000) {
-      lastTimerDecrement = now;
-      
-      if (timerValue > 0) {
-        timerValue--;
-        beep(50);
-        updateTimerDisplay();
-        EEPROM.update(EEPROM_ADDR_TIME, (timerValue >> 8) & 0xFF);
-        EEPROM.update(EEPROM_ADDR_TIME + 1, timerValue & 0xFF);  // Zapisz timerValue do dwóch bajtów
-      }
-  
-      if (timerValue == 0) {
-        beep(500);
-        countingEnabled = false;
-      }
+  // Po sekundzie można skasować błąd przyciskiem START
+  if (errorState && millis() - errorTime >= 1000) {
+    if (digitalRead(START_INPUT) == HIGH) {
+      errorState = false;
+      updateTimerDisplay();  // Przywrócenie poprzedniej wartości wyświetlacza
     }
   }
 
-    // Obsługa pinu A0 (nagrzewnica) w zależności od trybu
+  if(!errorState) {
+    if (modeChangeRequested) {
+      modeChangeRequested = false;
+      manualMode = !manualMode;
+      EEPROM.update(EEPROM_ADDR_MODE, manualMode);
+      updateLEDs();
+    }
+    
+    checkButtons(POWER_UP, POWER_DOWN, &buttonUpHeld, &buttonDownHeld, &buttonUpHoldStart, &buttonDownHoldStart, changePowerLevel, 0, 100);
+    checkButtons(TIME_UP, TIME_DOWN, &buttonTimeUpHeld, &buttonTimeDownHeld, &buttonTimeUpHoldStart, &buttonTimeDownHoldStart, changeTimerValue, 0, 999);
+  
+    bool startState = digitalRead(START_INPUT);
+    bool stopState = digitalRead(STOP_INPUT);
+    unsigned long now = millis();
+  
+    if (now - lastDebounceTime > debounceDelay) {
+      if (toggleMode) {
+        if (startState == HIGH && lastStartState == LOW) {
+          countingEnabled = !countingEnabled;
+        }
+      } else {
+        if (startState == HIGH && lastStartState == LOW) {
+          countingEnabled = true;
+        }
+        if (stopState == HIGH && lastStopState == LOW) {
+          countingEnabled = false;
+        }
+      }
+      lastStartState = startState;
+      lastStopState = stopState;
+      lastDebounceTime = now;
+    }
+  
     if (!manualMode && countingEnabled) {
-      // W trybie odliczania - jeśli odliczanie jest włączone
-      digitalWrite(HEATER_PIN, HIGH);  // Ustawienie pinu A0 (nagrzewnicy) na HIGH
-    } else if (!manualMode && !countingEnabled) {
-      // W trybie odliczania - jeśli odliczanie jest wyłączone
-      digitalWrite(HEATER_PIN, LOW);  // Ustawienie pinu A0 (nagrzewnicy) na LOW
-    } else if (manualMode && toggleMode) {
-      // W trybie manualnym - włączony toggle mode
-      if (!startState && lastStartState) {
-        countingEnabled = !countingEnabled;  // Zmiana stanu nagrzewnicy
-        digitalWrite(HEATER_PIN, countingEnabled);  // Toggle nagrzewnicy (A0)
+      if (now - lastTimerDecrement >= 1000) {
+        lastTimerDecrement = now;
+        
+        if (timerValue > 0) {
+          timerValue--;
+          beep(50);
+          updateTimerDisplay();
+          EEPROM.update(EEPROM_ADDR_TIME, (timerValue >> 8) & 0xFF);
+          EEPROM.update(EEPROM_ADDR_TIME + 1, timerValue & 0xFF);  // Zapisz timerValue do dwóch bajtów
+        }
+    
+        if (timerValue == 0) {
+          beep(500);
+          countingEnabled = false;
+        }
       }
-    } else {
-      digitalWrite(HEATER_PIN, startState); 
     }
-
-  static bool lastModeState = HIGH;
-  bool modeState = digitalRead(BUTTON_MODE);
   
-  if (modeState == LOW && lastModeState == HIGH) {
-    modeChangeRequested = true;
-    beep(50);
+      // Obsługa pinu A0 (nagrzewnica) w zależności od trybu
+      if (!manualMode && countingEnabled) {
+        // W trybie odliczania - jeśli odliczanie jest włączone
+        digitalWrite(HEATER_PIN, HIGH);  // Ustawienie pinu A0 (nagrzewnicy) na HIGH
+      } else if (!manualMode && !countingEnabled) {
+        // W trybie odliczania - jeśli odliczanie jest wyłączone
+        digitalWrite(HEATER_PIN, LOW);  // Ustawienie pinu A0 (nagrzewnicy) na LOW
+      } else if (manualMode && toggleMode) {
+        // W trybie manualnym - włączony toggle mode
+        if (!startState && lastStartState) {
+          countingEnabled = !countingEnabled;  // Zmiana stanu nagrzewnicy
+          digitalWrite(HEATER_PIN, countingEnabled);  // Toggle nagrzewnicy (A0)
+        }
+      } else {
+        digitalWrite(HEATER_PIN, startState); 
+      }
+  
+    static bool lastModeState = HIGH;
+    bool modeState = digitalRead(BUTTON_MODE);
+    
+    if (modeState == LOW && lastModeState == HIGH) {
+      modeChangeRequested = true;
+      beep(50);
+    }
+    lastModeState = modeState;
   }
-  lastModeState = modeState;
 }
 
 void changePowerLevel(int change) {
