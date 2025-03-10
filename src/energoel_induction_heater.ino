@@ -15,7 +15,6 @@
 #define HEATER_OUTPUT A0
 #define ERR_INPUT A1
 #define START_INPUT A2
-#define STOP_INPUT A3
 #define BUZZER_OUTPUT 5
 #define PWM_OUTPUT 10
 
@@ -44,9 +43,7 @@ uint16_t timerValue;
 unsigned long lastTimerDecrement = 0;
 
 bool countingEnabled = false;
-bool toggleMode = false;
 bool lastStartState = HIGH;
-bool lastStopState = HIGH;
 unsigned long lastDebounceTime = 0;
 const unsigned long debounceDelay = 50;
 
@@ -76,10 +73,10 @@ void setup() {
   pinMode(MANUAL_LED, OUTPUT);
   pinMode(TIMER_LED, OUTPUT);
   pinMode(START_INPUT, INPUT);
-  pinMode(STOP_INPUT, INPUT);
   pinMode(BUZZER_OUTPUT, OUTPUT);
   pinMode(PWM_OUTPUT, OUTPUT);
   pinMode(ERR_INPUT, INPUT);
+  pinMode(HEATER_OUTPUT, OUTPUT);
 
   uint8_t savedMode = EEPROM.read(EEPROM_ADDR_MODE);
   manualMode = (savedMode == 0xFF) ? true : savedMode;
@@ -96,12 +93,10 @@ void setup() {
 
   delay(100);
 
-  toggleMode = (digitalRead(STOP_INPUT) == HIGH);
-
   updateLEDs();
   updatePowerDisplay();
   updateTimerDisplay();
-  analogWrite(PWM_OUTPUT, powerLevel * 2);
+  analogWrite(PWM_OUTPUT, powerLevel * 2.2);
 
   TCCR2A = (1 << WGM21); // CTC (Clear Timer on Compare Match)
   TCCR2B = (1 << CS22);  // Prescaler 64 (16MHz / 64 = 250 kHz, OCR2A = 249 → 1kHz)
@@ -156,115 +151,124 @@ void checkButtons(int buttonUp, int buttonDown, bool* upHeld, bool* downHeld, un
   }
 }
 
-void loop() {
-  errorState = false;
-  errorTime = 0;
-  lastErrorReadTime = 0;
-  
-  if (digitalRead(ERR_INPUT) == HIGH && !errorState) {
+void handleErrorState() {
+  static unsigned long errorBlockTime = 0;
+
+  if (millis() - errorBlockTime > 1000) {
+    errorState = false;
+    errorTime = 0;
+    lastErrorReadTime = 0;
+
+    if (digitalRead(ERR_INPUT) == HIGH && !errorState) {
       unsigned long currentTime = millis();
       if (currentTime - lastErrorReadTime > debounceDelay) {
-          lastErrorReadTime = currentTime;
-          errorState = true;
-          errorTime = currentTime;
-          countingEnabled = false;
-          digitBuffer[0] = 10;  // 'E'
-          digitBuffer[1] = 11;  // 'r'
-          digitBuffer[2] = 11;  // 'r'
-          for (int i = 0; i < 3; i++) {
-              beep(500);
-              delay(500);
-          }
+        lastErrorReadTime = currentTime;
+        errorState = true;
+        errorTime = currentTime;
+        countingEnabled = false;
+        digitBuffer[0] = 10;  // 'E'
+        digitBuffer[1] = 11;  // 'r'
+        digitBuffer[2] = 11;  // 'r'
+        for (int i = 0; i < 3; i++) {
+          beep(500);
+          delay(500);
+        }
+        errorBlockTime = millis();  // Block ERR_INPUT for one second
       }
+    }
   }
 
-  // After one second ERROR can be cleared by pressing START button
-  if (errorState && millis() - errorTime >= 1000) {
+  // Allow clearing the error immediately by pressing START button
+  if (errorState) {
     if (digitalRead(START_INPUT) == HIGH) {
       errorState = false;
       updateTimerDisplay();
     }
   }
+}
 
-  if(!errorState) {
-    if (modeChangeRequested) {
-      modeChangeRequested = false;
-      manualMode = !manualMode;
-      EEPROM.update(EEPROM_ADDR_MODE, manualMode);
-      updateLEDs();
-    }
-    
-    checkButtons(POWER_UP_BUTTON, POWER_DOWN_BUTTON, &buttonUpHeld, &buttonDownHeld, &buttonUpHoldStart, &buttonDownHoldStart, changePowerLevel, 0, 100);
-    checkButtons(TIME_UP_BUTTON, TIME_DOWN_BUTTON, &buttonTimeUpHeld, &buttonTimeDownHeld, &buttonTimeUpHoldStart, &buttonTimeDownHoldStart, changeTimerValue, 0, 999);
-  
-    bool startState = digitalRead(START_INPUT);
-    bool stopState = digitalRead(STOP_INPUT);
-    unsigned long now = millis();
-  
-    if (now - lastDebounceTime > debounceDelay) {
-      if (toggleMode) {
-        if (startState == HIGH && lastStartState == LOW) {
-          countingEnabled = !countingEnabled;
-        }
-      } else {
-        if (startState == HIGH && lastStartState == LOW) {
-          countingEnabled = true;
-        }
-        if (stopState == HIGH && lastStopState == LOW) {
-          countingEnabled = false;
-        }
-      }
-      lastStartState = startState;
-      lastStopState = stopState;
-      lastDebounceTime = now;
-    }
-  
-    if (!manualMode && countingEnabled) {
-      if (now - lastTimerDecrement >= 1000) {
-        lastTimerDecrement = now;
-        
-        if (timerValue > 0) {
-          timerValue--;
-          beep(50);
-          updateTimerDisplay();
-          EEPROM.update(EEPROM_ADDR_TIME, (timerValue >> 8) & 0xFF);
-          EEPROM.update(EEPROM_ADDR_TIME + 1, timerValue & 0xFF);
-        }
-    
-        if (timerValue == 0) {
-          beep(500);
-          countingEnabled = false;
-        }
-      }
-    }
+void handleModeChange() {
+  if (modeChangeRequested) {
+    modeChangeRequested = false;
+    manualMode = !manualMode;
+    EEPROM.update(EEPROM_ADDR_MODE, manualMode);
+    updateLEDs();
+  }
+}
 
-    if (!manualMode && countingEnabled) {
-      digitalWrite(HEATER_OUTPUT, HIGH);
-    } else if (!manualMode && !countingEnabled) {
-      digitalWrite(HEATER_OUTPUT, LOW);
-    } else if (manualMode && toggleMode) {
-      if (!startState && lastStartState) {
-        countingEnabled = !countingEnabled;
-        digitalWrite(HEATER_OUTPUT, countingEnabled);
-      }
+void handleButtonChecks() {
+  checkButtons(POWER_UP_BUTTON, POWER_DOWN_BUTTON, &buttonUpHeld, &buttonDownHeld, &buttonUpHoldStart, &buttonDownHoldStart, changePowerLevel, 0, 100);
+  checkButtons(TIME_UP_BUTTON, TIME_DOWN_BUTTON, &buttonTimeUpHeld, &buttonTimeDownHeld, &buttonTimeUpHoldStart, &buttonTimeDownHoldStart, changeTimerValue, 0, 999);
+}
+
+void handleTimer() {
+  unsigned long now = millis();
+  bool startState = digitalRead(START_INPUT);
+
+  if (!manualMode) {
+    if (startState == HIGH) {
+      countingEnabled = true;
     } else {
-      digitalWrite(HEATER_OUTPUT, startState); 
+      countingEnabled = false;
     }
-  
-    static bool lastModeState = HIGH;
-    bool modeState = digitalRead(MODE_BUTTON);
-    
-    if (modeState == LOW && lastModeState == HIGH) {
-      modeChangeRequested = true;
-      beep(50);
+
+    if (countingEnabled && (now - lastTimerDecrement >= 1000)) {
+      lastTimerDecrement = now;
+
+      if (timerValue > 0) {
+        timerValue--;
+        beep(50);
+        updateTimerDisplay();
+        EEPROM.update(EEPROM_ADDR_TIME, (timerValue >> 8) & 0xFF);
+        EEPROM.update(EEPROM_ADDR_TIME + 1, timerValue & 0xFF);
+      }
+
+      if (timerValue == 0) {
+        beep(500);
+        countingEnabled = false;
+      }
     }
-    lastModeState = modeState;
+  }
+}
+
+void handleHeaterOutput() {
+  bool startState = digitalRead(START_INPUT);
+
+  if (!manualMode && countingEnabled) {
+    digitalWrite(HEATER_OUTPUT, HIGH);
+  } else if (!manualMode && !countingEnabled) {
+    digitalWrite(HEATER_OUTPUT, LOW);
+  } else if (manualMode) {
+    digitalWrite(HEATER_OUTPUT, startState);
+  }
+}
+
+void handleModeButton() {
+  static bool lastModeState = HIGH;
+  bool modeState = digitalRead(MODE_BUTTON);
+
+  if (modeState == LOW && lastModeState == HIGH) {
+    modeChangeRequested = true;
+    beep(50);
+  }
+  lastModeState = modeState;
+}
+
+void loop() {
+  handleErrorState();
+
+  if (!errorState) {
+    handleModeChange();
+    handleButtonChecks();
+    handleTimer();
+    handleHeaterOutput();
+    handleModeButton();
   }
 }
 
 void changePowerLevel(int change) {
   powerLevel = constrain(powerLevel + change, 0, 100);
-  analogWrite(PWM_OUTPUT, powerLevel * 2);
+  analogWrite(PWM_OUTPUT, powerLevel * 2.2);
   updatePowerDisplay();
   EEPROM.update(EEPROM_ADDR_POWER, powerLevel);
 }
@@ -296,9 +300,9 @@ void updateTimerDisplay() {
 void beep(unsigned long duration) {
   unsigned long startTime = millis();
   while (millis() - startTime < duration) {
-      digitalWrite(BUZZER_OUTPUT, HIGH);
-      delayMicroseconds(500);  // 1 kHz
-      digitalWrite(BUZZER_OUTPUT, LOW);
-      delayMicroseconds(500);
+    digitalWrite(BUZZER_OUTPUT, HIGH);
+    delayMicroseconds(500);  // 1 kHz
+    digitalWrite(BUZZER_OUTPUT, LOW);
+    delayMicroseconds(500);
   }
 }
